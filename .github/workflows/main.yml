@@ -1,5 +1,5 @@
 ---
-name: ⬇️  01- Down load URL
+name: 01- 🔥 دانلود فایل ( اصلی )
 
 on:
   workflow_dispatch:
@@ -28,17 +28,24 @@ on:
         type: string
 
 env:
-  CODES_URL: "https://github.com/nikzad-avasam/notifications/raw/refs/heads/main/assets/activate-codes-for-downloader.txt"
+  CODES_URL: "https://raw.githubusercontent.com/keepfiless/activate/refs/heads/main/checklist/ul.txt"
 
 jobs:
   check-activation:
+    name: "🔍 بررسی فعالسازی"
     runs-on: ubuntu-latest
     outputs:
       is_activated: ${{ steps.check.outputs.is_activated }}
-      stored_code: ${{ steps.check.outputs.stored_code }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Restore activation cache
+        id: cache-activation
+        uses: actions/cache@v4
+        with:
+          path: .activation-status
+          key: activation-status-${{ github.repository }}
 
       - name: Check activation status
         id: check
@@ -46,10 +53,9 @@ jobs:
           echo "========================================"
           echo "🔍 بررسی وضعیت فعالسازی..."
           echo "========================================"
-          if [ -f "activate.txt" ]; then
-            STORED_CODE=$(grep -oP 'code=\K.*' activate.txt | head -1 || echo "")
-            echo "stored_code=$STORED_CODE" >> $GITHUB_OUTPUT
-            if [ -n "$STORED_CODE" ]; then
+          if [ -f ".activation-status/act.txt" ]; then
+            ACT_STATUS=$(cat .activation-status/act.txt 2>/dev/null || echo "")
+            if [ "$ACT_STATUS" = "1" ]; then
               echo "is_activated=true" >> $GITHUB_OUTPUT
               echo "✅ وضعیت: فعال شده"
               echo "🎉 دانلودر شما فعال است!"
@@ -59,16 +65,18 @@ jobs:
             fi
           else
             echo "is_activated=false" >> $GITHUB_OUTPUT
-            echo "stored_code=" >> $GITHUB_OUTPUT
             echo "🔒 وضعیت: فعال نشده"
             echo "⚠️ برای استفاده از دانلودر، ابتدا باید آن را فعال کنید"
           fi
           echo "========================================"
 
   activate:
+    name: "🔐 فعالسازی با کد"
     needs: check-activation
     if: needs.check-activation.outputs.is_activated == 'false' && github.event.inputs.activation_code != ''
     runs-on: ubuntu-latest
+    outputs:
+      just_activated: ${{ steps.validate.outputs.valid }}
     permissions:
       contents: write
     steps:
@@ -84,9 +92,29 @@ jobs:
           echo "========================================"
           echo ""
           echo "📥 دریافت لیست کدهای معتبر..."
-          curl -sL "${{ env.CODES_URL }}" | tr -d '\r' | grep -v '^$' > /tmp/valid_codes.txt
+          curl -sL "${{ env.CODES_URL }}" | tr -d '\r' | grep -v '^$' > /tmp/raw_codes.txt
 
-          if grep -qx "$INPUT_CODE" /tmp/valid_codes.txt; then
+          # Extract last 4 characters of each valid code (skip first 4)
+          > /tmp/valid_codes.txt
+          while IFS= read -r code; do
+            # Only process codes that have more than 4 characters
+            if [ ${#code} -gt 4 ]; then
+              echo "${code: -4}" >> /tmp/valid_codes.txt
+            else
+              echo "$code" >> /tmp/valid_codes.txt
+            fi
+          done < /tmp/raw_codes.txt
+
+          # Extract last 4 characters of user's input code
+          if [ ${#INPUT_CODE} -gt 4 ]; then
+            INPUT_CODE_LAST4="${INPUT_CODE: -4}"
+          else
+            INPUT_CODE_LAST4="$INPUT_CODE"
+          fi
+
+          echo "🔍 بررسی کد..."
+
+          if grep -qx "$INPUT_CODE_LAST4" /tmp/valid_codes.txt; then
             echo ""
             echo "✅ کد فعالسازی معتبر است!"
             echo "🎊 تبریک! کد شما تایید شد"
@@ -156,24 +184,26 @@ jobs:
           echo ""
           exit 1
 
-      - name: Save activation code
+      - name: Save activation to cache
         if: steps.validate.outputs.valid == 'true'
         run: |
-          echo "💾 در حال ذخیره کد فعالسازی..."
-          echo "code=${{ github.event.inputs.activation_code }}" > activate.txt
-          echo "activated_at=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> activate.txt
-          echo "activated_by=${{ github.actor }}" >> activate.txt
-          echo "✅ کد ذخیره شد"
+          echo "💾 در حال ذخیره وضعیت فعالسازی در کش..."
+          mkdir -p .activation-status
+          echo "1" > .activation-status/act.txt
+          echo "activated_at=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> .activation-status/info.txt
+          echo "activated_by=${{ github.actor }}" >> .activation-status/info.txt
+          echo "✅ فعالسازی ذخیره شد"
 
-      - name: Commit activation
+      - name: Cache activation status
+        if: steps.validate.outputs.valid == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .activation-status
+          key: activation-status-${{ github.repository }}
+
+      - name: Activation success message
         if: steps.validate.outputs.valid == 'true'
         run: |
-          echo "📤 در حال ثبت فعالسازی..."
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git add activate.txt
-          git commit -m "🔑 فعالسازی موفق"
-          git push
           echo ""
           echo "========================================"
           echo "🎉 فعالسازی با موفقیت انجام شد!"
@@ -186,6 +216,7 @@ jobs:
           echo "========================================"
 
   not-activated:
+    name: "⚠️ نیاز به فعالسازی"
     needs: check-activation
     if: needs.check-activation.outputs.is_activated == 'false' && github.event.inputs.activation_code == ''
     runs-on: ubuntu-latest
@@ -252,30 +283,14 @@ jobs:
           exit 1
 
   save-file:
-    needs: check-activation
-    if: needs.check-activation.outputs.is_activated == 'true'
+    name: "📥 دانلود فایل"
+    needs: [check-activation, activate]
+    if: always() && !cancelled() && (needs.check-activation.outputs.is_activated == 'true' || needs.activate.outputs.just_activated == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
       contents: write
     steps:
-      - name: Fetch and validate stored code
-        run: |
-          echo "🔍 در حال بررسی اعتبار فعالسازی..."
-          curl -sL "${{ env.CODES_URL }}" | tr -d '\r' | grep -v '^$' > /tmp/valid_codes.txt
-          STORED_CODE="${{ needs.check-activation.outputs.stored_code }}"
-          if ! grep -qx "$STORED_CODE" /tmp/valid_codes.txt; then
-            echo ""
-            echo "❌ کد فعالسازی شما باطل شده است!"
-            echo ""
-            echo "⚠️ این کد دیگر معتبر نیست"
-            echo "📌 برای دریافت کد جدید:"
-            echo "   https://pay.avasam.ir/link/769584"
-            echo ""
-            exit 1
-          fi
-          echo "✅ فعالسازی معتبر است"
-
       - name: Check URL provided
         run: |
           if [ -z "${{ github.event.inputs.urls }}" ]; then
@@ -662,7 +677,7 @@ jobs:
 
                 DOWNLOAD_LINKS_MD=""
                 LINK_NUM=0
-                for part_file in $(ls "$BACKUP_DIR/${FOLDER_NAME}/"*.zip "$BACKUP_DIR/${FOLDER_NAME}/"*.z[0-9]* 2>/dev/null | sort); do
+                for part_file in $(ls "$BACKUP_DIR/${FOLDER_NAME}/"*.zip "$BACKUP_DIR/${FOLDER_NAME}/"*.z[0-9]* 2>/dev/null | sort -V); do
                   if [ -f "$part_file" ]; then
                     PART_BASENAME=$(basename "$part_file")
                     PART_ENCODED=$(urlencode "${PART_BASENAME}")
@@ -1049,7 +1064,7 @@ jobs:
 
           while IFS= read -r -d '' FILE; do
             ALL_FILES+=("$FILE")
-          done < <(find downloads -type f \( -name "*.zip" -o -name "*.z[0-9][0-9]" -o -name "*.z[0-9]" -o -name "*.mp4" -o -name "*.mp3" -o -name "*.m4a" -o -name "*.exe" -o -name "*.iso" -o -name "*.tar*" -o -name "*.rar" \) -print0 2>/dev/null | sort -z)
+          done < <(find downloads -type f \( -name "*.zip" -o -name "*.z[0-9][0-9][0-9]" -o -name "*.z[0-9][0-9]" -o -name "*.z[0-9]" -o -name "*.mp4" -o -name "*.mp3" -o -name "*.m4a" -o -name "*.exe" -o -name "*.iso" -o -name "*.tar*" -o -name "*.rar" \) -print0 2>/dev/null | sort -zV)
 
           TOTAL_FILES=${#ALL_FILES[@]}
           echo "Found $TOTAL_FILES files to push"
